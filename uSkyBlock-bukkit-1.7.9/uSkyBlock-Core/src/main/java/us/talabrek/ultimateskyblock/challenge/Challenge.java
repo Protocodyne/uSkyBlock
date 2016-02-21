@@ -1,0 +1,254 @@
+package us.talabrek.ultimateskyblock.challenge;
+
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import us.talabrek.ultimateskyblock.handler.VaultHandler;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static dk.lockfuglsang.minecraft.po.I18nUtil.tr;
+import static us.talabrek.ultimateskyblock.util.FormatUtil.prefix;
+import static us.talabrek.ultimateskyblock.util.FormatUtil.wordWrap;
+
+/**
+ * The data-object for a challenge
+ */
+public class Challenge {
+    public static final Pattern REQ_PATTERN = Pattern.compile("(?<type>[0-9]+)(:(?<subtype>[0-9]+))?:(?<amount>[0-9]+)(;(?<op>[+\\-*])(?<inc>[0-9]+))?(?<meta>\\{.*\\})?");
+
+    enum Type { PLAYER, ISLAND, ISLAND_LEVEL;
+        static Type from(String s) {
+            if (s == null || s.trim().isEmpty() || s.trim().toLowerCase().equals("onplayer")) {
+                return PLAYER;
+            } else if (s != null && s.equalsIgnoreCase("islandlevel")) {
+                return ISLAND_LEVEL;
+            }
+            return ISLAND;
+        }
+    }
+    private final String name;
+    private final String description;
+    private final String displayName;
+    private final Type type;
+    private final List<String> requiredItems;
+    private final List<EntityMatch> requiredEntities;
+    private final Rank rank;
+    private final int resetInHours;
+    private final ItemStack displayItem;
+    private final String tool;
+    private final ItemStack lockedItem;
+    private final boolean takeItems;
+    private final int radius;
+    private final Reward reward;
+    private final Reward repeatReward;
+
+    public Challenge(String name, String displayName, String description, Type type, List<String> requiredItems, List<EntityMatch> requiredEntities, Rank rank, int resetInHours, ItemStack displayItem, String tool, ItemStack lockedItem, boolean takeItems, int radius, Reward reward, Reward repeatReward) {
+        this.name = name;
+        this.displayName = displayName;
+        this.type = type;
+        this.requiredItems = requiredItems;
+        this.requiredEntities = requiredEntities;
+        this.rank = rank;
+        this.resetInHours = resetInHours;
+        this.displayItem = displayItem;
+        this.tool = tool;
+        this.lockedItem = lockedItem;
+        this.takeItems = takeItems;
+        this.radius = radius;
+        this.reward = reward;
+        this.repeatReward = repeatReward;
+        this.description = description;
+    }
+
+    public boolean isRepeatable() {
+        return repeatReward != null;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public Type getType() {
+        return type;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public int getRadius() {
+        return radius;
+    }
+
+    public int getRequiredLevel() {
+        if (type == Type.ISLAND_LEVEL && requiredItems.size() == 1) {
+            return Integer.parseInt(requiredItems.get(0), 10);
+        }
+        return 0;
+    }
+
+    public List<ItemStack> getRequiredItems(int timesCompleted) {
+        List<ItemStack> items = new ArrayList<>();
+        for (String item : requiredItems) {
+            Matcher m = REQ_PATTERN.matcher(item);
+            if (m.matches()) {
+                int reqItem = Integer.parseInt(m.group("type"), 10);
+                int subType = m.group("subtype") != null ? Integer.parseInt(m.group("subtype"), 10) : 0;
+                int amount = Integer.parseInt(m.group("amount"), 10);
+                char op = m.group("op") != null ? m.group("op").charAt(0) : 0;
+                int inc = m.group("inc") != null ? Integer.parseInt(m.group("inc"), 10) : 0;
+                Map<String,String> metaMap = createMetaMap(m.group("meta"));
+                amount = ChallengeLogic.calcAmount(amount, op, inc, timesCompleted);
+                ItemStack mat = new ItemStack(reqItem, amount, (short) subType);
+                ItemMeta meta = mat.getItemMeta();
+                meta.setDisplayName(getItemName(mat, metaMap));
+                meta.setLore(getLore(mat, metaMap));
+                mat.setItemMeta(meta);
+                items.add(mat);
+            }
+        }
+        return items;
+    }
+
+    private List<String> getLore(ItemStack mat, Map<String, String> metaMap) {
+        List<String> lore = mat.getItemMeta().getLore();
+        if (lore == null) {
+            lore = new ArrayList<>();
+        }
+        if (metaMap.containsKey("lore")) {
+            lore.addAll(Arrays.asList(metaMap.get("lore").split("\\\\n")));
+        }
+        return lore;
+    }
+
+    private Map<String, String> createMetaMap(String meta) {
+        HashMap<String, String> map = new HashMap<>();
+        if (meta != null && meta.startsWith("{") && meta.endsWith("}")) {
+            meta = meta.substring(1, meta.length()-1);
+            // NOTE: very simple parsing - but doable for the most basic meta
+            String[] keyValues = meta.split(",");
+            for (String keyValue : keyValues) {
+                int ix = keyValue.indexOf(":");
+                if (ix >= 0) {
+                    String key = keyValue.substring(0, ix);
+                    String value = keyValue.substring(ix+1);
+                    map.put(key.trim().toLowerCase(), value.trim());
+                }
+            }
+        }
+        return map;
+    }
+
+    private String getItemName(ItemStack mat, Map<String, String> meta) {
+        if (meta.containsKey("name")) {
+            return meta.get("name");
+        } else if (mat.getItemMeta().getDisplayName() != null) {
+            return mat.getItemMeta().getDisplayName();
+        }
+        return null;
+    }
+
+    public List<EntityMatch> getRequiredEntities() {
+        return requiredEntities;
+    }
+
+    public Rank getRank() {
+        return rank;
+    }
+
+    public int getResetInHours() {
+        return resetInHours;
+    }
+
+    public ItemStack getDisplayItem(ChallengeCompletion completion, boolean withCurrency) {
+        ItemStack currentChallengeItem = getDisplayItem();
+        ItemMeta meta = currentChallengeItem.getItemMeta();
+        List<String> lores = new ArrayList<>();
+        lores.addAll(prefix(wordWrap(getDescription(), 30, 30), "\u00a77"));
+        int timesCompleted = completion.getTimesCompletedSinceTimer();
+        Reward reward = getReward();
+        if (completion.getTimesCompleted() > 0 && isRepeatable()) {
+            if (completion.isOnCooldown()) {
+                long cooldown = completion.getCooldownInMillis();
+                if (cooldown >= ChallengeLogic.MS_DAY) {
+                    final int days = (int) (cooldown / ChallengeLogic.MS_DAY);
+                    lores.add(tr("\u00a74Requirements will reset in {0} days.", days));
+                } else if (cooldown >= ChallengeLogic.MS_HOUR) {
+                    final int hours = (int) cooldown / ChallengeLogic.MS_HOUR;
+                    lores.add(tr("\u00a74Requirements will reset in {0} hours.", hours));
+                } else {
+                    final int minutes = Math.round(cooldown / ChallengeLogic.MS_MIN);
+                    lores.add(tr("\u00a74Requirements will reset in {0} minutes.", minutes));
+                }
+            }
+            reward = getRepeatReward();
+        }
+        lores.add(tr("\u00a7eThis challenge requires the following:"));
+        for (ItemStack item : getRequiredItems(timesCompleted)) {
+            lores.add(tr("\u00a7f{0} \u00a77{1}", item.getAmount(), VaultHandler.getItemName(item)));
+        }
+        List<String> lines = wordWrap("\u00a7a" + reward.getRewardText(), 20, 30);
+        lores.add(tr("\u00a76Item Reward: \u00a7a") + lines.get(0));
+        for (String line : lines.subList(1, lines.size())) {
+            lores.add(line);
+        }
+        if (withCurrency) {
+            lores.add(tr("\u00a76Currency Reward: \u00a7a{0}", reward.getCurrencyReward()));
+        }
+        lores.add(tr("\u00a76Exp Reward: \u00a7a{0}", reward.getXpReward()));
+        lores.add(tr("\u00a7dTotal times completed: \u00a7f{0}", completion.getTimesCompleted()));
+        meta.setLore(lores);
+        currentChallengeItem.setItemMeta(meta);
+        return currentChallengeItem;
+    }
+
+    public ItemStack getDisplayItem() {
+        // TODO: 10/12/2014 - R4zorax: Incorporate all the other goodies here...
+        return new ItemStack(displayItem); // Copy
+    }
+
+    public String getTool() {
+        return tool;
+    }
+
+    public ItemStack getLockedDisplayItem() {
+        return lockedItem != null ? new ItemStack(lockedItem) : null;
+    }
+
+    public boolean isTakeItems() {
+        return takeItems;
+    }
+
+    public Reward getReward() {
+        return reward;
+    }
+
+    public Reward getRepeatReward() {
+        return repeatReward;
+    }
+
+    @Override
+    public String toString() {
+        return "Challenge{" +
+                "name='" + name + '\'' +
+                ", type=" + type +
+                ", requiredItems='" + requiredItems + '\'' +
+                ", rank='" + rank + '\'' +
+                ", resetInHours=" + resetInHours +
+                ", displayItem=" + displayItem +
+                ", takeItems=" + takeItems +
+                ", reward=" + reward +
+                ", repeatReward=" + repeatReward +
+                '}';
+    }
+}
